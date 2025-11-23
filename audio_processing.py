@@ -103,7 +103,7 @@ def process_video_audio(video_path: str) -> str:
         logger.error(f"Audio processing failed: {e}")
         return None
 
-def heavy_remix(input_path: str, output_path: str) -> bool:
+def heavy_remix(input_path: str, output_path: str, duration: float = None) -> bool:
     """
     Professional Audio Remix - Clean & Transformative:
     1. Convert to WAV via FFmpeg (Safe Load)
@@ -114,6 +114,9 @@ def heavy_remix(input_path: str, output_path: str) -> bool:
     logger.info(f"🎛️ Professional Remix: {input_path}")
     temp_safe_wav = input_path + ".safe.wav"
     
+    y = None
+    sr = 44100
+
     try:
         # 1. Safe Convert to WAV (Fixes PySoundFile/MP4 issues)
         cmd = [
@@ -126,6 +129,15 @@ def heavy_remix(input_path: str, output_path: str) -> bool:
         # 2. Load
         y, sr = librosa.load(temp_safe_wav, sr=None, mono=False)
         if y.ndim == 1: y = np.stack([y, y])
+
+    except Exception as e:
+        if duration and duration > 0:
+            logger.warning(f"⚠️ Audio extraction failed (likely silent video). Generating fresh audio track for {duration:.1f}s...")
+            sr = 44100
+            y = np.zeros((2, int(duration * sr)))
+        else:
+            logger.error(f"❌ Audio extraction failed: {e}")
+            return False
         
         # 3. Smooth Time Stretch (±4% - subtle but noticeable)
         rate = random.uniform(0.96, 1.04)
