@@ -1,0 +1,27 @@
+# === Transformative Content Features ===
+# IMPORTANT: Start with features DISABLED to test basic functionality first
+# Enable them one by one after confirming the bot works
+
+# Enable/disable transformations (yes/no)
+ADD_TEXT_OVERLAY=no
+ADD_COLOR_GRADING=no
+ADD_WATERMARK=no
+ADD_SPEED_RAMPING=no
+FORCE_AUDIO_REMIX=yes
+
+# Text Overlay Settings
+TEXT_OVERLAY_TEXT=VIRAL
+TEXT_OVERLAY_POSITION=bottom
+TEXT_OVERLAY_STYLE=modern
+
+# Color Grading Settings
+COLOR_FILTER=cinematic
+COLOR_INTENSITY=0.5
+
+# Watermark Settings (set path to your logo)
+WATERMARK_PATH=
+WATERMARK_POSITION=topright
+WATERMARK_OPACITY=0.7
+
+# Speed Ramping Settings
+SPEED_VARIATION=0.15
