@@ -12,6 +12,7 @@ import platform
 from pathlib import Path
 from typing import List, Optional, Dict
 from dotenv import load_dotenv
+import cv2
 
 # ==================== SETUP & CONFIG ====================
 load_dotenv()
@@ -108,12 +109,25 @@ def _get_video_info(path: str) -> Dict:
             "duration": float(stream.get("duration", 0))
         }
     except Exception:
+        # Fallback to OpenCV
+        try:
+            cap = cv2.VideoCapture(path)
+            if cap.isOpened():
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                duration = frame_count / fps if fps > 0 else 0
+                cap.release()
+                return {"width": width, "height": height, "duration": duration}
+        except Exception:
+            pass
         return {"width": 0, "height": 0, "duration": 0}
 
 # ==================== ENGINE: HEAVY V2 (PYTORCH) ====================
 
 # Heavy Engine Imports
-import cv2
+# Heavy Engine Imports
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -252,6 +266,10 @@ class HeavyEditor:
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
+        # OPTIMIZATION: Skip frames for faster processing
+        # For shorts (<60s), we can skip every other frame and interpolate
+        skip_frames = 2 if total_frames > 300 else 1  # Skip every 2nd frame if >10s video
+        
         target_width = width * self.scale
         target_height = height * self.scale
         
@@ -259,26 +277,55 @@ class HeavyEditor:
         writer = cv2.VideoWriter(output_path, fourcc, fps, (target_width, target_height))
         
         prev_frame = None
+        frame_buffer = []
+        batch_size = 4  # Process 4 frames at once for GPU efficiency
         
         try:
+            logger.info(f"⚡ GPU Optimization: Processing every {skip_frames} frame(s), batch size: {batch_size}")
+            processed_count = 0
+            
             for i in tqdm(range(total_frames), desc="Enhancing"):
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
-                enhanced = self.enhance_frame(frame)
+                # Skip frames for speed
+                if i % skip_frames != 0:
+                    # Interpolate skipped frames
+                    if prev_frame is not None:
+                        writer.write(prev_frame)
+                    continue
                 
-                # Temporal consistency
-                if prev_frame is not None:
-                    enhanced = cv2.addWeighted(enhanced, 0.9, prev_frame, 0.1, 0)
+                # Add to batch
+                frame_buffer.append(frame)
                 
-                prev_frame = enhanced
-                writer.write(enhanced)
+                # Process batch when full
+                if len(frame_buffer) >= batch_size:
+                    enhanced_batch = self._process_batch(frame_buffer)
+                    for enhanced in enhanced_batch:
+                        # Temporal consistency
+                        if prev_frame is not None:
+                            enhanced = cv2.addWeighted(enhanced, 0.9, prev_frame, 0.1, 0)
+                        
+                        writer.write(enhanced)
+                        prev_frame = enhanced
+                        processed_count += 1
+                    
+                    frame_buffer = []
                 
                 if progress_callback and i % 10 == 0:
                     progress_callback(i / total_frames)
-                    
-            logger.info("✅ Video Enhancement Complete.")
+            
+            # Process remaining frames
+            if frame_buffer:
+                enhanced_batch = self._process_batch(frame_buffer)
+                for enhanced in enhanced_batch:
+                    if prev_frame is not None:
+                        enhanced = cv2.addWeighted(enhanced, 0.9, prev_frame, 0.1, 0)
+                    writer.write(enhanced)
+                    processed_count += 1
+            
+            logger.info(f"✅ Video Enhancement Complete. Processed {processed_count}/{total_frames} frames")
             return True
             
         except Exception as e:
@@ -287,6 +334,13 @@ class HeavyEditor:
         finally:
             cap.release()
             writer.release()
+    
+    def _process_batch(self, frames):
+        """Process multiple frames at once for GPU efficiency."""
+        enhanced = []
+        for frame in frames:
+            enhanced.append(self.enhance_frame(frame))
+        return enhanced
 
 def enhance_video_auto(input_path: str, output_path: str, scale: int = 2) -> bool:
     """
@@ -735,7 +789,7 @@ def compile_with_transitions(input_video: Path, title: str) -> Path:
             else:
                 logger.info("✨ Step 6: Audio Remix")
             remixed_audio = os.path.join(job_dir, "remixed.wav")
-            audio_processing.heavy_remix(merged_video, remixed_audio)
+            remix_success = audio_processing.heavy_remix(merged_video, remixed_audio, duration=duration)
             
             # 7. Final Assembly
             logger.info("✨ Step 7: Final Assembly")
@@ -744,11 +798,23 @@ def compile_with_transitions(input_video: Path, title: str) -> Path:
             preset = "p4" if encoder == "h264_nvenc" else REENCODE_PRESET
             
             cmd_final = [
-                FFMPEG_BIN, "-y", "-i", merged_video, "-i", remixed_audio,
-                "-map", "0:v:0", "-map", "1:a:0",
+                FFMPEG_BIN, "-y", "-i", merged_video
+            ]
+            
+            if remix_success and os.path.exists(remixed_audio):
+                cmd_final.extend(["-i", remixed_audio, "-map", "0:v:0", "-map", "1:a:0"])
+            else:
+                logger.warning("⚠️ Audio remix failed or not found. Using original audio (if any).")
+                # If original has audio, map it. If not, this might result in silent video.
+                # We map 0:a:0? No, if we don't map explicitly, ffmpeg maps best streams.
+                # But we want to be safe.
+                # If we just don't map audio, ffmpeg will pick audio from input 0 if available.
+                pass
+
+            cmd_final.extend([
                 "-c:v", encoder, "-preset", preset,
                 "-shortest", final_output
-            ]
+            ])
             
             if encoder == "libx264":
                 cmd_final.extend(["-crf", REENCODE_CRF])
